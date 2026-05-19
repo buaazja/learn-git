@@ -2,9 +2,11 @@
 #include <GL/gl.h>
 #include <math.h>
 #include <stdlib.h>
+#include <time.h>
 
 #pragma comment(lib, "opengl32.lib")
 #pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "msimg32.lib")
 
 const char g_szClassName[] = "EarthWindow";
 HINSTANCE hInst;
@@ -12,6 +14,36 @@ HWND hWnd;
 HDC hDC;
 HGLRC hRC;
 float earthRotation = 0.0f;
+GLuint earthTexture = 0;
+GLuint starTexture = 0;
+
+struct Star {
+    float x, y, z;
+    float size;
+    float brightness;
+    float twinkleSpeed;
+    float hue;
+};
+
+LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+        case WM_CLOSE:
+            PostQuitMessage(0);
+            break;
+        case WM_DESTROY:
+            PostQuitMessage(0);
+            break;
+        default:
+            return DefWindowProc(hwnd, msg, wParam, lParam);
+    }
+    return 0;
+}
+
+Star stars[300];
+int shootingStarTimer = 0;
+float shootingStarX = 0, shootingStarY = 0, shootingStarZ = 0;
+float shootingStarVelX = 0, shootingStarVelY = 0;
+bool showShootingStar = false;
 
 void gluPerspective(float fovY, float aspect, float zNear, float zFar) {
     float f = 1.0f / (float)tan(fovY * 3.14159f / 360.0f);
@@ -55,41 +87,232 @@ void gluLookAt(float eyeX, float eyeY, float eyeZ, float centerX, float centerY,
     glMultMatrixf(m);
 }
 
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-        case WM_CLOSE:
-            PostQuitMessage(0);
-            break;
-        case WM_DESTROY:
-            PostQuitMessage(0);
-            break;
-        default:
-            return DefWindowProc(hwnd, msg, wParam, lParam);
+HBITMAP LoadBitmapFromFile(const char* filename) {
+    return (HBITMAP)LoadImage(NULL, filename, IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE);
+}
+
+GLuint CreateTextureFromBitmap(HBITMAP hBitmap) {
+    if (!hBitmap) return 0;
+
+    BITMAP bmp;
+    GetObject(hBitmap, sizeof(BITMAP), &bmp);
+
+    GLuint texture;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+
+    unsigned char* data = new unsigned char[bmp.bmWidth * bmp.bmHeight * 4];
+    BITMAPINFO bi = {sizeof(BITMAPINFO), bmp.bmWidth, bmp.bmHeight, 1, 32, BI_RGB, 0, 0, 0, 0, 0};
+    GetDIBits(GetDC(NULL), hBitmap, 0, bmp.bmHeight, data, &bi, DIB_RGB_COLORS);
+
+    for (int i = 0; i < bmp.bmWidth * bmp.bmHeight; i++) {
+        unsigned char temp = data[i*4];
+        data[i*4] = data[i*4+2];
+        data[i*4+2] = temp;
     }
-    return 0;
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, bmp.bmWidth, bmp.bmHeight, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+
+    delete[] data;
+    DeleteObject(hBitmap);
+    return texture;
+}
+
+GLuint CreateProceduralEarthTexture() {
+    unsigned char* data = new unsigned char[512 * 256 * 3];
+
+    for (int y = 0; y < 256; y++) {
+        for (int x = 0; x < 512; x++) {
+            int idx = (y * 512 + x) * 3;
+            float lat = (float)y / 256.0f * 180.0f - 90.0f;
+            float lon = (float)x / 512.0f * 360.0f - 180.0f;
+
+            float noise = (float)(rand() % 100) / 100.0f * 0.3f;
+            float landProb = sin(lat * 3.14159f / 180.0f) * 0.5f + 0.5f;
+            landProb += noise;
+
+            if (landProb > 0.55f) {
+                if (abs(lat) < 15.0f) {
+                    data[idx] = 34; data[idx+1] = 139; data[idx+2] = 34;
+                } else if (abs(lat) > 60.0f) {
+                    data[idx] = 255; data[idx+1] = 250; data[idx+2] = 250;
+                } else {
+                    data[idx] = 0; data[idx+1] = 100; data[idx+2] = 0;
+                }
+            } else {
+                if (abs(lat) > 65.0f) {
+                    data[idx] = 255; data[idx+1] = 250; data[idx+2] = 250;
+                } else {
+                    data[idx] = 10; data[idx+1] = 50; data[idx+2] = 150;
+                }
+            }
+        }
+    }
+
+    for (int y = 0; y < 256; y++) {
+        for (int x = 0; x < 512; x++) {
+            int idx = (y * 512 + x) * 3;
+            float lat = (float)y / 256.0f * 180.0f - 90.0f;
+            if (abs(lat) < 5.0f) {
+                float swirl = sin((float)x / 512.0f * 20.0f) * 0.5f + 0.5f;
+                data[idx] = (unsigned char)(data[idx] * (1 - swirl * 0.3f));
+                data[idx+1] = (unsigned char)(data[idx+1] * (1 - swirl * 0.3f) + 30 * swirl);
+                data[idx+2] = (unsigned char)(data[idx+2] + 20 * swirl);
+            }
+        }
+    }
+
+    GLuint texture;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 512, 256, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+
+    delete[] data;
+    return texture;
+}
+
+void initStars() {
+    for (int i = 0; i < 300; i++) {
+        stars[i].x = (float)(rand() % 3000 - 1500) / 100.0f;
+        stars[i].y = (float)(rand() % 1500 - 750) / 100.0f;
+        stars[i].z = -8.0f + (float)(rand() % 200) / 100.0f;
+        stars[i].size = 0.5f + (float)(rand() % 100) / 100.0f * 2.0f;
+        stars[i].brightness = 0.5f + (float)(rand() % 100) / 100.0f * 0.5f;
+        stars[i].twinkleSpeed = 1.0f + (float)(rand() % 100) / 100.0f * 3.0f;
+        stars[i].hue = (float)(rand() % 360);
+    }
+}
+
+void drawNebula() {
+    glDisable(GL_LIGHTING);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glEnable(GL_BLEND);
+
+    for (int i = 0; i < 5; i++) {
+        float x = (float)(rand() % 2000 - 1000) / 80.0f;
+        float y = (float)(rand() % 1200 - 600) / 80.0f;
+        float z = -6.0f;
+        float size = 3.0f + (float)(rand() % 100) / 100.0f * 5.0f;
+
+        float hue = (float)(rand() % 360) / 360.0f;
+        float r = 0.5f + 0.5f * sin(hue * 6.28f);
+        float g = 0.5f + 0.5f * sin(hue * 6.28f + 2.09f);
+        float b = 0.5f + 0.5f * sin(hue * 6.28f + 4.18f);
+
+        glColor4f(r * 0.15f, g * 0.15f, b * 0.2f, 0.1f);
+        glBegin(GL_TRIANGLE_FAN);
+        glVertex3f(x, y, z);
+        for (int j = 0; j <= 20; j++) {
+            float angle = (float)j / 20.0f * 6.28f;
+            glVertex3f(x + cos(angle) * size, y + sin(angle) * size * 0.6f, z);
+        }
+        glEnd();
+    }
+
+    glDisable(GL_BLEND);
+    glEnable(GL_LIGHTING);
 }
 
 void drawStars() {
-    glPointSize(1.5f);
-    glColor3f(1.0f, 1.0f, 1.0f);
-    glBegin(GL_POINTS);
-    for (int i = 0; i < 200; i++) {
-        float x = (float)(rand() % 2000 - 1000) / 100.0f;
-        float y = (float)(rand() % 1200 - 600) / 100.0f;
-        float z = -5.0f + (float)(rand() % 100) / 50.0f;
-        glVertex3f(x, y, z);
+    glDisable(GL_LIGHTING);
+    glDepthMask(FALSE);
+
+    drawNebula();
+
+    static float time = 0;
+    time += 0.016f;
+
+    for (int i = 0; i < 300; i++) {
+        float twinkle = sin(time * stars[i].twinkleSpeed) * 0.3f + 0.7f;
+        float brightness = stars[i].brightness * twinkle;
+
+        float hue = stars[i].hue;
+        float r = 1.0f;
+        float g = 0.9f + 0.1f * sin(hue * 0.017f);
+        float b = 0.8f + 0.2f * sin(hue * 0.017f + 1.0f);
+
+        glPointSize(stars[i].size * twinkle);
+        glColor3f(r * brightness, g * brightness, b * brightness);
+        glBegin(GL_POINTS);
+        glVertex3f(stars[i].x, stars[i].y, stars[i].z);
+        glEnd();
+
+        if (stars[i].size > 1.5f) {
+            glPointSize(stars[i].size * 0.5f);
+            glColor3f(1.0f, 1.0f, 1.0f);
+            glBegin(GL_POINTS);
+            glVertex3f(stars[i].x, stars[i].y, stars[i].z);
+            glEnd();
+        }
     }
-    glEnd();
+
+    glDepthMask(TRUE);
+    glEnable(GL_LIGHTING);
 }
 
-void drawSphere(float radius, int segments, int rings) {
+void updateShootingStar() {
+    if (!showShootingStar) {
+        shootingStarTimer++;
+        if (shootingStarTimer > 300) {
+            showShootingStar = true;
+            shootingStarTimer = 0;
+            shootingStarX = (float)(rand() % 800 - 400) / 50.0f;
+            shootingStarY = (float)(rand() % 400 + 100) / 50.0f;
+            shootingStarZ = -5.0f;
+            shootingStarVelX = (float)(rand() % 100 + 50) / 100.0f;
+            shootingStarVelY = -(float)(rand() % 100 + 50) / 100.0f;
+        }
+    } else {
+        shootingStarX += shootingStarVelX;
+        shootingStarY += shootingStarVelY;
+
+        glDisable(GL_LIGHTING);
+        glDepthMask(FALSE);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+
+        glLineWidth(2.0f);
+        glColor4f(1.0f, 1.0f, 1.0f, 0.8f);
+        glBegin(GL_LINES);
+        glVertex3f(shootingStarX, shootingStarY, shootingStarZ);
+        glVertex3f(shootingStarX - shootingStarVelX * 3, shootingStarY - shootingStarVelY * 3, shootingStarZ);
+        glEnd();
+
+        glPointSize(3.0f);
+        glColor3f(1.0f, 1.0f, 1.0f);
+        glBegin(GL_POINTS);
+        glVertex3f(shootingStarX, shootingStarY, shootingStarZ);
+        glEnd();
+
+        glDepthMask(TRUE);
+        glEnable(GL_LIGHTING);
+
+        if (shootingStarY < -5.0f) {
+            showShootingStar = false;
+            shootingStarTimer = 0;
+        }
+    }
+}
+
+void drawTexturedSphere(float radius, int segments, int rings) {
     for (int ring = 0; ring < rings; ring++) {
         float theta1 = ((float)ring / rings) * 3.14159f;
         float theta2 = ((float)(ring + 1) / rings) * 3.14159f;
+        float v1 = (float)ring / rings;
+        float v2 = (float)(ring + 1) / rings;
 
         for (int seg = 0; seg < segments; seg++) {
             float phi1 = ((float)seg / segments) * 2.0f * 3.14159f;
             float phi2 = ((float)(seg + 1) / segments) * 2.0f * 3.14159f;
+            float u1 = (float)seg / segments;
+            float u2 = (float)(seg + 1) / segments;
 
             float x1 = radius * sin(theta1) * cos(phi1);
             float y1 = radius * cos(theta1);
@@ -109,12 +332,19 @@ void drawSphere(float radius, int segments, int rings) {
 
             glBegin(GL_QUADS);
             glNormal3f(x1 / radius, y1 / radius, z1 / radius);
+            glTexCoord2f(u1, v1);
             glVertex3f(x1, y1, z1);
+
             glNormal3f(x2 / radius, y2 / radius, z2 / radius);
+            glTexCoord2f(u2, v1);
             glVertex3f(x2, y2, z2);
+
             glNormal3f(x3 / radius, y3 / radius, z3 / radius);
+            glTexCoord2f(u2, v2);
             glVertex3f(x3, y3, z3);
+
             glNormal3f(x4 / radius, y4 / radius, z4 / radius);
+            glTexCoord2f(u1, v2);
             glVertex3f(x4, y4, z4);
             glEnd();
         }
@@ -122,50 +352,18 @@ void drawSphere(float radius, int segments, int rings) {
 }
 
 void drawEarth() {
-    glColor3f(0.2f, 0.5f, 0.9f);
-    drawSphere(1.0f, 24, 18);
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, earthTexture);
 
-    glColor3f(0.1f, 0.4f, 0.1f);
-    glPushMatrix();
-    glRotatef(90.0f, 1.0f, 0.0f, 0.0f);
-    glTranslatef(0.3f, 0.0f, 0.5f);
-    glBegin(GL_QUADS);
-    float h = 0.4f;
-    float r = 0.15f;
-    float segs = 12;
-    for (int i = 0; i < (int)segs; i++) {
-        float theta1 = ((float)i / segs) * 2.0f * 3.14159f;
-        float theta2 = ((float)(i + 1) / segs) * 2.0f * 3.14159f;
-        glVertex3f(r * cos(theta1), -h/2, r * sin(theta1));
-        glVertex3f(r * cos(theta2), -h/2, r * sin(theta2));
-        glVertex3f(r * cos(theta2), h/2, r * sin(theta2));
-        glVertex3f(r * cos(theta1), h/2, r * sin(theta1));
-    }
-    glEnd();
-    glPopMatrix();
+    glColor3f(1.0f, 1.0f, 1.0f);
+    drawTexturedSphere(1.0f, 48, 32);
 
-    glColor3f(0.1f, 0.3f, 0.1f);
-    glPushMatrix();
-    glRotatef(45.0f, 0.0f, 1.0f, 0.0f);
-    glTranslatef(-0.5f, 0.3f, 0.2f);
-    glBegin(GL_QUADS);
-    h = 0.35f;
-    r = 0.12f;
-    for (int i = 0; i < (int)segs; i++) {
-        float theta1 = ((float)i / segs) * 2.0f * 3.14159f;
-        float theta2 = ((float)(i + 1) / segs) * 2.0f * 3.14159f;
-        glVertex3f(r * cos(theta1), -h/2, r * sin(theta1));
-        glVertex3f(r * cos(theta2), -h/2, r * sin(theta2));
-        glVertex3f(r * cos(theta2), h/2, r * sin(theta2));
-        glVertex3f(r * cos(theta1), h/2, r * sin(theta1));
-    }
-    glEnd();
-    glPopMatrix();
+    glDisable(GL_TEXTURE_2D);
 }
 
 void renderScene() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    glClearColor(0.0f, 0.0f, 0.05f, 1.0f);
+    glClearColor(0.0f, 0.0f, 0.02f, 1.0f);
 
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
@@ -178,16 +376,44 @@ void renderScene() {
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_LIGHTING);
     glEnable(GL_LIGHT0);
+    glEnable(GL_LIGHT1);
+    glEnable(GL_LIGHT2);
 
-    GLfloat lightPos[] = { 5.0f, 5.0f, 5.0f, 0.0f };
-    glLightfv(GL_LIGHT0, GL_POSITION, lightPos);
+    glLightModeli(GL_LIGHT_MODEL_LOCAL_VIEWER, GL_TRUE);
+    glLightModeli(GL_LIGHT_MODEL_TWO_SIDE, GL_FALSE);
 
-    GLfloat lightAmbient[] = { 0.3f, 0.3f, 0.3f, 1.0f };
-    glLightfv(GL_LIGHT0, GL_AMBIENT, lightAmbient);
+    GLfloat lightPos0[] = { 5.0f, 5.0f, 5.0f, 0.0f };
+    GLfloat lightAmbient0[] = { 0.3f, 0.3f, 0.3f, 1.0f };
+    GLfloat lightDiffuse0[] = { 1.0f, 0.95f, 0.9f, 1.0f };
+    GLfloat lightSpecular0[] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    glLightfv(GL_LIGHT0, GL_POSITION, lightPos0);
+    glLightfv(GL_LIGHT0, GL_AMBIENT, lightAmbient0);
+    glLightfv(GL_LIGHT0, GL_DIFFUSE, lightDiffuse0);
+    glLightfv(GL_LIGHT0, GL_SPECULAR, lightSpecular0);
 
-    glDisable(GL_LIGHTING);
+    GLfloat lightPos1[] = { -3.0f, -2.0f, -3.0f, 0.0f };
+    GLfloat lightAmbient1[] = { 0.1f, 0.15f, 0.3f, 1.0f };
+    GLfloat lightDiffuse1[] = { 0.2f, 0.3f, 0.5f, 1.0f };
+    glLightfv(GL_LIGHT1, GL_POSITION, lightPos1);
+    glLightfv(GL_LIGHT1, GL_AMBIENT, lightAmbient1);
+    glLightfv(GL_LIGHT1, GL_DIFFUSE, lightDiffuse1);
+
+    GLfloat lightPos2[] = { 0.0f, 3.0f, 0.0f, 0.0f };
+    GLfloat lightAmbient2[] = { 0.15f, 0.1f, 0.05f, 1.0f };
+    glLightfv(GL_LIGHT2, GL_POSITION, lightPos2);
+    glLightfv(GL_LIGHT2, GL_AMBIENT, lightAmbient2);
+
+    GLfloat matAmbient[] = { 0.2f, 0.2f, 0.2f, 1.0f };
+    GLfloat matDiffuse[] = { 0.8f, 0.8f, 0.8f, 1.0f };
+    GLfloat matSpecular[] = { 0.5f, 0.5f, 0.5f, 1.0f };
+    GLfloat matShininess[] = { 30.0f };
+    glMaterialfv(GL_FRONT, GL_AMBIENT, matAmbient);
+    glMaterialfv(GL_FRONT, GL_DIFFUSE, matDiffuse);
+    glMaterialfv(GL_FRONT, GL_SPECULAR, matSpecular);
+    glMaterialfv(GL_FRONT, GL_SHININESS, matShininess);
+
     drawStars();
-    glEnable(GL_LIGHTING);
+    updateShootingStar();
 
     glRotatef(earthRotation * 0.5f, 0.0f, 1.0f, 0.0f);
     drawEarth();
@@ -218,7 +444,7 @@ BOOL setupPixelFormat(HDC hDC) {
 
 DWORD WINAPI rotationThread(LPVOID lpParam) {
     while (true) {
-        earthRotation += 1.0f;
+        earthRotation += 0.5f;
         if (earthRotation > 360.0f) earthRotation -= 360.0f;
         Sleep(16);
     }
@@ -229,6 +455,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     hInst = hInstance;
     WNDCLASSEX wc;
     MSG Msg;
+    srand((unsigned int)time(NULL));
 
     wc.cbSize = sizeof(WNDCLASSEX);
     wc.style = CS_HREDRAW | CS_VREDRAW;
@@ -251,7 +478,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     hWnd = CreateWindowEx(
         WS_EX_CLIENTEDGE,
         g_szClassName,
-        "Rotating Earth with Stars",
+        "Earth with Terrain - Starry Sky",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, 800, 600,
         NULL, NULL, hInstance, NULL
@@ -270,6 +497,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     hRC = wglCreateContext(hDC);
     wglMakeCurrent(hDC, hRC);
 
+    glEnable(GL_NORMALIZE);
+    glShadeModel(GL_SMOOTH);
+
+    earthTexture = CreateProceduralEarthTexture();
+    initStars();
+
     HANDLE hThread = CreateThread(NULL, 0, rotationThread, NULL, 0, NULL);
 
     while (true) {
@@ -282,6 +515,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     CloseHandle(hThread);
+    glDeleteTextures(1, &earthTexture);
     wglMakeCurrent(NULL, NULL);
     wglDeleteContext(hRC);
     ReleaseDC(hWnd, hDC);
