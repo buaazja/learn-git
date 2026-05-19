@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <time.h>
+#include <atomic>
 
 #pragma comment(lib, "opengl32.lib")
 #pragma comment(lib, "winmm.lib")
@@ -13,7 +14,7 @@ HINSTANCE hInst;
 HWND hWnd;
 HDC hDC;
 HGLRC hRC;
-float earthRotation = 0.0f;
+std::atomic<float> earthRotation(0.0f);
 GLuint earthTexture = 0;
 GLuint starTexture = 0;
 
@@ -23,6 +24,12 @@ struct Star {
     float brightness;
     float twinkleSpeed;
     float hue;
+};
+
+struct Nebula {
+    float x, y, z;
+    float size;
+    float r, g, b;
 };
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -40,6 +47,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 }
 
 Star stars[300];
+Nebula nebulae[5];
 int shootingStarTimer = 0;
 float shootingStarX = 0, shootingStarY = 0, shootingStarZ = 0;
 float shootingStarVelX = 0, shootingStarVelY = 0;
@@ -102,8 +110,10 @@ GLuint CreateTextureFromBitmap(HBITMAP hBitmap) {
     glBindTexture(GL_TEXTURE_2D, texture);
 
     unsigned char* data = new unsigned char[bmp.bmWidth * bmp.bmHeight * 4];
-    BITMAPINFO bi = {sizeof(BITMAPINFO), bmp.bmWidth, bmp.bmHeight, 1, 32, BI_RGB, 0, 0, 0, 0, 0};
-    GetDIBits(GetDC(NULL), hBitmap, 0, bmp.bmHeight, data, &bi, DIB_RGB_COLORS);
+    BITMAPINFO bi = {sizeof(BITMAPINFO), bmp.bmWidth, -bmp.bmHeight, 1, 32, BI_RGB, 0, 0, 0, 0, 0};
+    HDC hScreenDC = GetDC(NULL);
+    GetDIBits(hScreenDC, hBitmap, 0, bmp.bmHeight, data, &bi, DIB_RGB_COLORS);
+    ReleaseDC(NULL, hScreenDC);
 
     for (int i = 0; i < bmp.bmWidth * bmp.bmHeight; i++) {
         unsigned char temp = data[i*4];
@@ -191,28 +201,34 @@ void initStars() {
     }
 }
 
+void initNebulae() {
+    for (int i = 0; i < 5; i++) {
+        nebulae[i].x = (float)(rand() % 2000 - 1000) / 80.0f;
+        nebulae[i].y = (float)(rand() % 1200 - 600) / 80.0f;
+        nebulae[i].z = -6.0f;
+        nebulae[i].size = 3.0f + (float)(rand() % 100) / 100.0f * 5.0f;
+
+        float hue = (float)(rand() % 360) / 360.0f;
+        nebulae[i].r = 0.5f + 0.5f * sin(hue * 6.28f);
+        nebulae[i].g = 0.5f + 0.5f * sin(hue * 6.28f + 2.09f);
+        nebulae[i].b = 0.5f + 0.5f * sin(hue * 6.28f + 4.18f);
+    }
+}
+
 void drawNebula() {
     glDisable(GL_LIGHTING);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE);
     glEnable(GL_BLEND);
 
     for (int i = 0; i < 5; i++) {
-        float x = (float)(rand() % 2000 - 1000) / 80.0f;
-        float y = (float)(rand() % 1200 - 600) / 80.0f;
-        float z = -6.0f;
-        float size = 3.0f + (float)(rand() % 100) / 100.0f * 5.0f;
+        Nebula& n = nebulae[i];
 
-        float hue = (float)(rand() % 360) / 360.0f;
-        float r = 0.5f + 0.5f * sin(hue * 6.28f);
-        float g = 0.5f + 0.5f * sin(hue * 6.28f + 2.09f);
-        float b = 0.5f + 0.5f * sin(hue * 6.28f + 4.18f);
-
-        glColor4f(r * 0.15f, g * 0.15f, b * 0.2f, 0.1f);
+        glColor4f(n.r * 0.15f, n.g * 0.15f, n.b * 0.2f, 0.1f);
         glBegin(GL_TRIANGLE_FAN);
-        glVertex3f(x, y, z);
+        glVertex3f(n.x, n.y, n.z);
         for (int j = 0; j <= 20; j++) {
             float angle = (float)j / 20.0f * 6.28f;
-            glVertex3f(x + cos(angle) * size, y + sin(angle) * size * 0.6f, z);
+            glVertex3f(n.x + cos(angle) * n.size, n.y + sin(angle) * n.size * 0.6f, n.z);
         }
         glEnd();
     }
@@ -415,7 +431,7 @@ void renderScene() {
     drawStars();
     updateShootingStar();
 
-    glRotatef(earthRotation * 0.5f, 0.0f, 1.0f, 0.0f);
+    glRotatef(earthRotation.load(std::memory_order_relaxed) * 0.5f, 0.0f, 1.0f, 0.0f);
     drawEarth();
 
     SwapBuffers(hDC);
@@ -444,8 +460,10 @@ BOOL setupPixelFormat(HDC hDC) {
 
 DWORD WINAPI rotationThread(LPVOID lpParam) {
     while (true) {
-        earthRotation += 0.5f;
-        if (earthRotation > 360.0f) earthRotation -= 360.0f;
+        float cur = earthRotation.load(std::memory_order_relaxed);
+        float next = cur + 0.5f;
+        if (next > 360.0f) next -= 360.0f;
+        earthRotation.store(next, std::memory_order_relaxed);
         Sleep(16);
     }
     return 0;
@@ -502,6 +520,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     earthTexture = CreateProceduralEarthTexture();
     initStars();
+    initNebulae();
 
     HANDLE hThread = CreateThread(NULL, 0, rotationThread, NULL, 0, NULL);
 
