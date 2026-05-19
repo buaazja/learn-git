@@ -511,7 +511,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     UpdateWindow(hWnd);
 
     hDC = GetDC(hWnd);
-    setupPixelFormat(hDC);
+    if (!setupPixelFormat(hDC)) {
+        MessageBox(NULL, "Setup Pixel Format Failed!", "Error!", MB_ICONEXCLAMATION | MB_OK);
+        return 0;
+    }
     hRC = wglCreateContext(hDC);
     wglMakeCurrent(hDC, hRC);
 
