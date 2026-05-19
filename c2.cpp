@@ -133,45 +133,109 @@ GLuint CreateTextureFromBitmap(HBITMAP hBitmap) {
 }
 
 GLuint CreateProceduralEarthTexture() {
-    unsigned char* data = new unsigned char[512 * 256 * 3];
+    const int width = 1024;
+    const int height = 512;
+    unsigned char* data = new unsigned char[width * height * 3];
 
-    for (int y = 0; y < 256; y++) {
-        for (int x = 0; x < 512; x++) {
-            int idx = (y * 512 + x) * 3;
-            float lat = (float)y / 256.0f * 180.0f - 90.0f;
-            float lon = (float)x / 512.0f * 360.0f - 180.0f;
+    float* heightMap = new float[width * height];
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            float lat = (float)y / height * 3.14159f - 3.14159f / 2.0f;
+            float lon = (float)x / width * 2.0f * 3.14159f;
+            
+            float noise = 0.0f;
+            float scale = 1.0f;
+            float amp = 0.5f;
+            for (int octave = 0; octave < 6; octave++) {
+                float nx = lon * scale;
+                float ny = lat * scale;
+                noise += amp * (sin(nx) * cos(ny) + sin(nx * 2.3f) * cos(ny * 3.7f)) * 0.5f + 0.5f;
+                scale *= 2.0f;
+                amp *= 0.5f;
+            }
+            heightMap[y * width + x] = noise * 0.5f + 0.5f;
+        }
+    }
 
-            float noise = (float)(rand() % 100) / 100.0f * 0.3f;
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            int idx = (y * width + x) * 3;
+            float lat = (float)y / height * 180.0f - 90.0f;
+            float lon = (float)x / width * 360.0f - 180.0f;
+            float h = heightMap[y * width + x];
+
             float landProb = sin(lat * 3.14159f / 180.0f) * 0.5f + 0.5f;
-            landProb += noise;
+            landProb = landProb * 0.7f + h * 0.3f;
 
-            if (landProb > 0.55f) {
-                if (abs(lat) < 15.0f) {
-                    data[idx] = 34; data[idx+1] = 139; data[idx+2] = 34;
-                } else if (abs(lat) > 60.0f) {
-                    data[idx] = 255; data[idx+1] = 250; data[idx+2] = 250;
+            if (landProb > 0.52f) {
+                if (abs(lat) > 70.0f) {
+                    float iceBlend = (abs(lat) - 70.0f) / 20.0f;
+                    int r = (int)(255 * iceBlend + 20 * (1 - iceBlend));
+                    int g = (int)(250 * iceBlend + 80 * (1 - iceBlend));
+                    int b = (int)(250 * iceBlend + 100 * (1 - iceBlend));
+                    data[idx] = (unsigned char)r;
+                    data[idx+1] = (unsigned char)g;
+                    data[idx+2] = (unsigned char)b;
+                } else if (abs(lat) < 10.0f) {
+                    data[idx] = (unsigned char)(20 + h * 30);
+                    data[idx+1] = (unsigned char)(100 + h * 40);
+                    data[idx+2] = (unsigned char)(30 + h * 20);
+                } else if (abs(lat) < 30.0f) {
+                    data[idx] = (unsigned char)(30 + h * 20);
+                    data[idx+1] = (unsigned char)(120 + h * 30);
+                    data[idx+2] = (unsigned char)(40 + h * 20);
                 } else {
-                    data[idx] = 0; data[idx+1] = 100; data[idx+2] = 0;
+                    float forestBlend = (1.0f - h) * 0.5f;
+                    data[idx] = (unsigned char)(10 + forestBlend * 30 + h * 10);
+                    data[idx+1] = (unsigned char)(60 + forestBlend * 50 + h * 40);
+                    data[idx+2] = (unsigned char)(20 + forestBlend * 20 + h * 10);
                 }
             } else {
-                if (abs(lat) > 65.0f) {
-                    data[idx] = 255; data[idx+1] = 250; data[idx+2] = 250;
-                } else {
-                    data[idx] = 10; data[idx+1] = 50; data[idx+2] = 150;
-                }
+                float depth = (1.0f - landProb) * 2.0f;
+                int r = (int)(5 + depth * 15);
+                int g = (int)(30 + depth * 30);
+                int b = (int)(80 + depth * 80);
+                data[idx] = (unsigned char)r;
+                data[idx+1] = (unsigned char)g;
+                data[idx+2] = (unsigned char)b;
             }
         }
     }
 
-    for (int y = 0; y < 256; y++) {
-        for (int x = 0; x < 512; x++) {
-            int idx = (y * 512 + x) * 3;
-            float lat = (float)y / 256.0f * 180.0f - 90.0f;
-            if (abs(lat) < 5.0f) {
-                float swirl = sin((float)x / 512.0f * 20.0f) * 0.5f + 0.5f;
-                data[idx] = (unsigned char)(data[idx] * (1 - swirl * 0.3f));
-                data[idx+1] = (unsigned char)(data[idx+1] * (1 - swirl * 0.3f) + 30 * swirl);
-                data[idx+2] = (unsigned char)(data[idx+2] + 20 * swirl);
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            int idx = (y * width + x) * 3;
+            float lat = (float)y / height * 180.0f - 90.0f;
+            
+            if (abs(lat) < 8.0f) {
+                float swirl1 = sin((float)x / width * 30.0f) * 0.5f + 0.5f;
+                float swirl2 = sin((float)x / width * 15.0f + 1.0f) * 0.5f + 0.5f;
+                float swirl = swirl1 * 0.5f + swirl2 * 0.5f;
+                data[idx] = (unsigned char)(data[idx] * (1 - swirl * 0.25f) + 40 * swirl);
+                data[idx+1] = (unsigned char)(data[idx+1] * (1 - swirl * 0.2f) + 60 * swirl);
+                data[idx+2] = (unsigned char)(data[idx+2] + 30 * swirl);
+            }
+            
+            if (abs(lat) > 75.0f) {
+                float snowNoise = sin((float)x / width * 40.0f) * sin((float)y / height * 20.0f) * 0.5f + 0.5f;
+                float snow = (abs(lat) - 75.0f) / 15.0f;
+                data[idx] = (unsigned char)(data[idx] * (1 - snow) + (255 * snowNoise) * snow);
+                data[idx+1] = (unsigned char)(data[idx+1] * (1 - snow) + (250 * snowNoise) * snow);
+                data[idx+2] = (unsigned char)(data[idx+2] * (1 - snow) + (250 * snowNoise) * snow);
+            }
+        }
+    }
+
+    for (int i = 1; i < height - 1; i++) {
+        for (int j = 1; j < width - 1; j++) {
+            int idx = (i * width + j) * 3;
+            for (int c = 0; c < 3; c++) {
+                int sum = data[idx + c] + 
+                          data[((i-1)*width + j)*3 + c] + 
+                          data[((i+1)*width + j)*3 + c] + 
+                          data[(i*width + j-1)*3 + c] + 
+                          data[(i*width + j+1)*3 + c];
+                data[idx + c] = (unsigned char)(sum / 5);
             }
         }
     }
@@ -179,13 +243,15 @@ GLuint CreateProceduralEarthTexture() {
     GLuint texture;
     glGenTextures(1, &texture);
     glBindTexture(GL_TEXTURE_2D, texture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 512, 256, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glGenerateMipmap(GL_TEXTURE_2D);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
 
     delete[] data;
+    delete[] heightMap;
     return texture;
 }
 
@@ -372,7 +438,7 @@ void drawEarth() {
     glBindTexture(GL_TEXTURE_2D, earthTexture);
 
     glColor3f(1.0f, 1.0f, 1.0f);
-    drawTexturedSphere(1.0f, 48, 32);
+    drawTexturedSphere(1.0f, 96, 64);
 
     glDisable(GL_TEXTURE_2D);
 }
